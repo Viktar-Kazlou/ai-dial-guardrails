@@ -2,7 +2,7 @@ from langchain_core.messages import BaseMessage, AIMessage, SystemMessage, Human
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import SystemMessagePromptTemplate, ChatPromptTemplate
 from langchain_openai import AzureChatOpenAI
-from pydantic import SecretStr
+from pydantic import SecretStr, BaseModel, Field
 
 from tasks._constants import DIAL_URL, API_KEY
 
@@ -24,17 +24,63 @@ PROFILE = """
 **Annual Income:** $112,800  
 """
 
-VALIDATION_PROMPT = """NEED TO WRITE IT"""
+VALIDATION_PROMPT = """You are an output safety validator.
 
-FILTER_SYSTEM_PROMPT = """NEED TO WRITE IT"""
+Analyze the assistant output and detect if it leaks sensitive PII/secrets.
+
+Sensitive data includes (non-exhaustive):
+- SSN, date of birth, home address
+- driver's license numbers
+- credit card number, CVV, expiration
+- bank account information
+- annual income and other private financial details
+
+Allowed to disclose:
+- full name
+- phone
+- email
+- occupation
+
+Return only the structured result below.
+{format_instructions}
+"""
+
+FILTER_SYSTEM_PROMPT = """You are a safety redaction assistant.
+
+Rewrite the provided assistant response so it is safe to show to users.
+Rules:
+- Remove or mask all sensitive PII/secrets.
+- Keep only allowed fields: full name, phone, email, occupation.
+- Preserve helpful tone and answer intent.
+- Return plain text only.
+"""
 
 #TODO 1:
 # Create AzureChatOpenAI client, model to use `gpt-4.1-nano-2025-04-14` (or any other mini or nano models)
+llm_client = AzureChatOpenAI(
+    azure_deployment='gpt-4.1-nano-2025-04-14',
+    azure_endpoint=DIAL_URL,
+    api_key=SecretStr(API_KEY),
+    api_version='',
+    temperature=0.36,
+)
+
+
+class OutputValidationResult(BaseModel):
+    is_safe: bool = Field(description='True when output contains no restricted PII')
+    reason: str = Field(description='Short reason of validation result')
+    pii_types: list[str] = Field(default_factory=list, description='Detected PII categories')
 
 def validate(llm_output: str) :
     #TODO 2:
     # Make validation of LLM output to check leaks of PII
-    raise NotImplementedError
+    parser = PydanticOutputParser(pydantic_object=OutputValidationResult)
+    prompt = ChatPromptTemplate.from_messages([
+        SystemMessagePromptTemplate.from_template(VALIDATION_PROMPT),
+        HumanMessage('{llm_output}')
+    ]).partial(format_instructions=parser.get_format_instructions())
+
+    return (prompt | llm_client | parser).invoke({'llm_output': llm_output})
 
 def main(soft_response: bool):
     #TODO 3:
@@ -42,7 +88,40 @@ def main(soft_response: bool):
     # User input -> generation -> validation -> valid -> response to user
     #                                        -> invalid -> soft_response -> filter response with LLM -> response to user
     #                                                     !soft_response -> reject with description
-    raise NotImplementedError
+    messages: list[BaseMessage] = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=PROFILE),
+    ]
+
+    print("Output guardrail chat is ready. Type 'exit' or 'quit' to stop.")
+    while True:
+        user_input = input('> ').strip()
+        if not user_input:
+            continue
+        if user_input.lower() in {'exit', 'quit'}:
+            print('Goodbye!')
+            break
+
+        messages.append(HumanMessage(content=user_input))
+        raw_response = llm_client.invoke(messages)
+        validation = validate(raw_response.content)
+
+        if validation.is_safe:
+            print(raw_response.content)
+            messages.append(raw_response)
+            continue
+
+        if soft_response:
+            filtered_response = llm_client.invoke([
+                SystemMessage(content=FILTER_SYSTEM_PROMPT),
+                HumanMessage(content=raw_response.content),
+            ])
+            print(filtered_response.content)
+            messages.append(AIMessage(content=filtered_response.content))
+        else:
+            blocked_msg = f"Blocked by output guardrail: {validation.reason}. Detected: {', '.join(validation.pii_types) if validation.pii_types else 'PII'}"
+            print(blocked_msg)
+            messages.append(AIMessage(content="User has tried to access PII; response blocked."))
 
 
 main(soft_response=False)

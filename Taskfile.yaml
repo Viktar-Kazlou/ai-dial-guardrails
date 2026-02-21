@@ -1,0 +1,37 @@
+version: '3'
+
+dotenv: ['.env']
+
+vars:
+  PYTHON_VERSION: '3.11'
+  PYTHON_BIN: 'python{{.PYTHON_VERSION}}'
+  VENV_PYTHON: '.venv/bin/python{{.PYTHON_VERSION}}'
+
+tasks:
+  init:
+    desc: Create a virtual environment and install dependencies, and set up .gitignore
+    cmds:
+      # check python version matches configured version
+      - '{{.PYTHON_BIN}} --version | grep -E ''Python {{.PYTHON_VERSION}}(\.[0-9]+)?'' || (echo "Python {{.PYTHON_VERSION}} is required" && exit 1)'
+      - '{{.PYTHON_BIN}} -m venv .venv'
+      - .venv/bin/pip install -r requirements.txt
+      # create .gitignore if it doesn't exist
+      - test -f .gitignore || touch .gitignore
+      # add .venv to .gitignore if it's not already there
+      - grep -qxF '.venv' .gitignore || echo '.venv' >> .gitignore
+      - grep -qxF '__pycache__' .gitignore || echo '__pycache__' >> .gitignore
+      - grep -qxF '*.pyc' .gitignore || echo '*.pyc' >> .gitignore
+      - grep -qxF '.env' .gitignore || echo '.env' >> .gitignore
+      - grep -qxF 'microwave_faiss_index' .gitignore || echo 'microwave_faiss_index' >> .gitignore
+  task-1:
+    cmds: 
+      - '{{.VENV_PYTHON}} -m tasks.t_1.prompt_injection'
+
+  task-2:
+    cmds: 
+      - '{{.VENV_PYTHON}} -m tasks.t_2.input_llm_based_validation'
+
+  task-3:
+    cmds: 
+      # - '{{.VENV_PYTHON}} -m tasks.t_3.output_llm_based_validation'
+      - '{{.VENV_PYTHON}} -m tasks.t_3.streaming_pii_guardrail'

@@ -21,12 +21,27 @@ class PresidioStreamingPIIGuardrail:
         # 5. Create buffer as empty string (here we will accumulate chunks content and process it, will be used as obj var late)
         # 6. Create buffer_size as `buffer_size` (will be used as obj var late)
         # 7. Create safety_margin as `safety_margin` (will be used as obj var late)
-        raise NotImplementedError
+        nlp_configuration = {
+            "nlp_engine_name": "spacy",
+            "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
+        }
+        provider = NlpEngineProvider(nlp_configuration=nlp_configuration)
+        nlp_engine = provider.create_engine()
+
+        self.analyzer = AnalyzerEngine(nlp_engine=nlp_engine, supported_languages=["en"])
+        self.anonymizer = AnonymizerEngine()
+        self.buffer = ""
+        self.buffer_size = buffer_size
+        self.safety_margin = safety_margin
 
     def process_chunk(self, chunk: str) -> str:
         #TODO:
         # 1. Check if chunk is present, if not then return chunk itself
         # 2. Accumulate chunk to `buffer`
+        if not chunk:
+            return chunk
+
+        self.buffer += chunk
 
         if len(self.buffer) > self.buffer_size:
             safe_length = len(self.buffer) - self.safety_margin
@@ -44,7 +59,10 @@ class PresidioStreamingPIIGuardrail:
             #       - analyzer_results=results
             # 3. Set `buffer` as `buffer[safe_length:]`
             # 4. Return anonymized text
-            raise NotImplementedError
+            results = self.analyzer.analyze(text=text_to_process, language='en')
+            anonymized = self.anonymizer.anonymize(text=text_to_process, analyzer_results=results)
+            self.buffer = self.buffer[safe_length:]
+            return anonymized.text
 
         return ""
 
@@ -55,7 +73,13 @@ class PresidioStreamingPIIGuardrail:
         # 3. Anonymize `buffer` with analyzed results
         # 4. Set `buffer` as empty string
         # 5. Return anonymized text
-        raise NotImplementedError
+        if not self.buffer:
+            return ""
+
+        results = self.analyzer.analyze(text=self.buffer, language='en')
+        anonymized = self.anonymizer.anonymize(text=self.buffer, analyzer_results=results)
+        self.buffer = ""
+        return anonymized.text
 
 
 class StreamingPIIGuardrail:
@@ -194,13 +218,52 @@ PROFILE = """
 
 #TODO:
 # Create AzureChatOpenAI client, model to use `gpt-4.1-nano-2025-04-14` (or any other mini or nano models)
+llm_client = AzureChatOpenAI(
+    azure_deployment='gpt-4.1-nano-2025-04-14',
+    azure_endpoint=DIAL_URL,
+    api_key=SecretStr(API_KEY),
+    api_version='',
+    temperature=0.0,
+)
 
 def main():
     #TODO:
     # 1. Create PresidioStreamingPIIGuardrail or StreamingPIIGuardrail
     # 2. Create list of messages with system prompt and profile
     # 3. Create console chat with LLM, preserve history there and while streaming filter content with streaming guardrail
-    raise NotImplementedError()
+    messages: list[BaseMessage] = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=PROFILE),
+    ]
+
+    print("Streaming output guardrail chat is ready. Type 'exit' or 'quit' to stop.")
+    while True:
+        user_input = input('> ').strip()
+        if not user_input:
+            continue
+        if user_input.lower() in {'exit', 'quit'}:
+            print('Goodbye!')
+            break
+
+        messages.append(HumanMessage(content=user_input))
+        guardrail = StreamingPIIGuardrail()
+        safe_response = ""
+
+        print("Assistant: ", end="", flush=True)
+        for chunk in llm_client.stream(messages):
+            chunk_content = chunk.content or ""
+            redacted_chunk = guardrail.process_chunk(chunk_content)
+            if redacted_chunk:
+                print(redacted_chunk, end="", flush=True)
+                safe_response += redacted_chunk
+
+        final_redacted = guardrail.finalize()
+        if final_redacted:
+            print(final_redacted, end="", flush=True)
+            safe_response += final_redacted
+        print()
+
+        messages.append(AIMessage(content=safe_response))
 
 
 
